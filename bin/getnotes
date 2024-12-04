@@ -1,0 +1,157 @@
+#!/bin/sh -e
+##:
+#h: Usage: getnotes { [NOTE] | -l[...] | -[n]e[...] [NOTE] }
+#h:
+#h: Access system notes (-s), personal notes (-p), "contextual" (default)
+#h: notes or all (-a). You can list the note files with "-l" and edit
+#h: them with "-e". You can create new with "-n".
+#h:
+#h:   1. System notes: /var/{lib,run}/notes, /usr[/local]/share/notes
+#h:   2. Personal notes: $GETNOTES_DIR, ~/.notes
+#h:   3. Contextual notes: *.s.* ./notes
+#h:
+#h: Contextual notes have the following blocks for specifying the
+#h: context onto which they can be called.
+#h:   .-----------------. .------------------.
+#h:   | getnotes: CODE  | | directory: REGEX |
+#h:   | getnotes: CODE  | '------------------'
+#h:   | ...             |
+#h:   '-----------------'
+#h:
+#h: You can get the number of contextual notes with "-c".
+#h:
+#h: Environment variables: GETNOTES_DIR, EDITOR, READER
+##:
+getnotes() {
+    local op=v e_sys=y e_per=y e_ctx=y f_new= note= dirs= f tmp fil count
+
+    ## Parse command line options.
+    case "$1" in
+        -*l*) op=l;; -*e*) op=e;; -*c*) op=c;;
+        -*l*e*|-*e*l*) echo >&2 "error: Incompatible flags: -l, -e.";;
+    esac
+    case "$1" in -*s*|-*p*) e_sys= e_per= e_ctx=;; esac
+    case "$1" in -*s*) e_sys=y;; esac
+    case "$1" in -*p*) e_per=y;; esac
+    case "$1" in -*a*) e_sys=y e_per=y;; esac
+    case "$1" in -*n*) f_new=y;; esac
+    case "$1" in -*) shift;; esac
+    note="$1"
+
+    ## Calculate search directories.
+    case "${op}" in
+        v)
+            for f in $(getnotes_list); do
+                echo ""
+                echo "== ${f}"
+                echo ""
+                cat "${f}"
+            done | ${READER:-more}
+            ;;
+        l)
+            getnotes_list
+            ;;
+        e)
+            tmp="$(mktemp)"
+            getnotes_list > "${tmp}"
+            case "$(wc -l < "${tmp}")" in
+                0)
+                    getnotes_new
+                    ;;
+                1)
+                    fil="$(head -n 1 "${tmp}")"
+                    rm -f "${tmp}"
+                    ${EDITOR:-vi}
+                    ;;
+                *)
+                    cat "${tmp}" >&2
+                    echo "" >&2
+                    echo "error: Please be more specific." >&2
+                    rm -f "${tmp}"
+                    return 1
+                    ;;
+            esac    
+            ;;
+        c)
+            count="$(getnotes_list | sed -n '/\.s\./p' | wc -l)"
+            case "${count}" in
+                0) true;;
+                *) echo "You have notes, run getnotes to read them.";;
+            esac
+            ;;
+    esac
+}
+getnotes_new() {
+    name="$(basename "$(pwd)")"
+    base="${note:-notes_${name}}.s.md"
+    file="${GETNOTES_DIR:-${HOME:-${USERPROFILE}}/.notes}/${base}"
+    cat > "${file}" <<-EOF
+	${name}
+	$(echo "${name}" | sed 's|.|=|g')
+	
+	directory: ${name}
+	EOF
+    ${EDITOR:-vi} "${file}"
+}
+getnotes_list() {
+    local IFS="${NL}" d
+    for f in $(find $(getnotes_dirs) -type f 2>/dev/null); do
+        if getnotes_match "${f}"; then
+            echo "${f}"
+        fi
+    done
+}
+getnotes_match() {
+    local IFS file="$1" base="$(basename "$1")" dir_regex
+    unset IFS
+    ## Filter by name.
+    if test -n "${note}"; then
+        case "${base}" in *"${note}"*) true;; *) return 1;; esac
+    fi
+    ## When context disabled, do not check.
+    if test ! -n "${e_ctx}"; then
+        return 0
+    fi
+    ## Check context only on notes that require it.
+    case "${base}" in *.s.*) true;; *) return 0;; esac
+    ## Check directory.
+    dir_regex="$(sed -n 's|^directory: *||p' "${file}")"
+    if test -n "${dir_regex}" && ! grep -q -- "${dir_regex}" <<-EOF
+	$(basename $(pwd))
+	EOF
+    then
+        return 1
+    fi
+    ## Check code.
+    dir_code="$(sed -n 's|^getnotes: *||p' "${file}")"
+    if test -n "${dir_code}" && ! sh -ec "${dir_code}"; then
+        return 1
+    fi
+    ## Success.
+    return 0
+}
+getnotes_dirs() {
+    if test -n "${e_sys}${e_ctx}"; then
+        cat <<-EOF
+	/var/lib/notes
+	/var/run/notes
+	/usr/local/share/notes
+	/usr/share/notes
+	EOF
+    fi
+    if test -n "${e_per}${e_ctx}"; then
+        cat <<-EOF
+	${GETNOTES_DIR:+${GETNOTES_DIR}
+	}${USERPROFILE:-${HOME}}/.notes
+	EOF
+    fi
+}
+## -------------------------------------------------------------------
+NL='
+'
+if test @"${SCRNAME:-$(basename "$0")}" = @"getnotes"; then
+    case "${1}" in
+        -h|--help) sed -n 's/^ *#h: \{0,1\}//p' "$0";;
+        *)         getnotes "$@"; exit 0;;
+    esac
+fi
